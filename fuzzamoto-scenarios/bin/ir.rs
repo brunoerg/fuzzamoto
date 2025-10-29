@@ -10,7 +10,7 @@ use fuzzamoto::{
     fuzzamoto_main,
     oracles::{CrashOracle, Oracle, OracleResult},
     scenarios::{Scenario, ScenarioInput, ScenarioResult, generic::GenericScenario},
-    targets::{BitcoinCoreTarget, ConnectableTarget, HasTipHash, Target},
+    targets::{BitcoinCoreTarget, CallRpc, ConnectableTarget, HasTipHash, Target},
 };
 
 #[cfg(feature = "oracle_netsplit")]
@@ -27,43 +27,78 @@ use fuzzamoto_ir::{
 const COINBASE_MATURITY_HEIGHT_LIMIT: u32 = 100;
 const LATE_BLOCK_HEIGHT_LIMIT: u32 = 190;
 const COINBASE_VALUE: u64 = 25 * 100_000_000;
-// OP_TRUE script pubkey: 0x0 0x20 sha256(OP_TRUE)
 const OP_TRUE_SCRIPT_PUBKEY: [u8; 34] = [
     0u8, 32, 74, 232, 21, 114, 240, 110, 27, 136, 253, 92, 237, 122, 26, 0, 9, 69, 67, 46, 131,
     225, 85, 30, 111, 114, 30, 233, 192, 11, 140, 195, 50, 96,
 ];
 
-/// `IrScenario` is a scenario with the same context as `GenericScenario` but it operates on
-/// `fuzzamoto_ir::CompiledProgram`s as input.
+/// Hybrid IR scenario that combines P2P messages with RPC calls
 struct IrScenario<TX: Transport, T: Target<TX> + ConnectableTarget> {
     inner: GenericScenario<TX, T>,
     #[cfg(any(feature = "oracle_netsplit", feature = "oracle_consensus"))]
     second: T,
 }
 
+/// Extended compiled action that includes RPC calls
+#[derive(Debug)]
+enum HybridAction {
+    P2P(CompiledAction),
+    RpcGetMempoolInfo,
+}
+
 pub struct TestCase {
     program: CompiledProgram,
+    // Add RPC call points - indices in the action sequence where RPC should be called
+    rpc_call_points: Vec<usize>,
 }
 
 impl<'a> ScenarioInput<'a> for TestCase {
     fn decode(bytes: &'a [u8]) -> Result<Self, String> {
+        // First byte(s) determine number of RPC calls
+        if bytes.is_empty() {
+            return Err("Empty input".to_string());
+        }
+
+        let num_rpc_calls = (bytes[0] % 10) as usize; // Max 10 RPC calls
+        let mut rpc_call_points = Vec::new();
+
+        /*
+        // Workaround to have less RPC calls
+        if num_rpc_calls > 0 {
+            num_rpc_calls = 1;
+        }*/
+
+        // Next bytes determine where to insert RPC calls
+        for i in 0..num_rpc_calls {
+            if i + 1 < bytes.len() {
+                rpc_call_points.push(bytes[i + 1] as usize);
+            }
+        }
+
+        // Rest is the IR program
+        let program_bytes = &bytes[(num_rpc_calls + 1).min(bytes.len())..];
+
         let program = if cfg!(feature = "compile_in_vm") {
-            let program: Program = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+            let program: Program =
+                postcard::from_bytes(program_bytes).map_err(|e| e.to_string())?;
             let mut compiler = Compiler::new();
             compiler.compile(&program).map_err(|e| e.to_string())?
         } else {
-            postcard::from_bytes(bytes).map_err(|e| e.to_string())?
+            postcard::from_bytes(program_bytes).map_err(|e| e.to_string())?
         };
-        Ok(Self { program })
+
+        Ok(Self {
+            program,
+            rpc_call_points,
+        })
     }
 }
 
 impl<TX, T> IrScenario<TX, T>
 where
     TX: Transport,
-    T: Target<TX> + HasTipHash + ConnectableTarget,
+    T: Target<TX> + HasTipHash + ConnectableTarget + CallRpc,
 {
-    /// Build the IR program context
     fn build_program_context(inner: &GenericScenario<TX, T>) -> ProgramContext {
         ProgramContext {
             num_nodes: 1,
@@ -72,7 +107,6 @@ where
         }
     }
 
-    /// Extract coinbase outputs from mature blocks (height < 100) for use in IR programs
     fn build_txos(inner: &GenericScenario<TX, T>) -> Vec<fuzzamoto_ir::Txo> {
         let mut txos = Vec::new();
         for (block, _height) in inner
@@ -101,7 +135,6 @@ where
         txos
     }
 
-    /// Extract block headers from late blocks (height > 190) for use in IR programs
     fn build_headers(inner: &GenericScenario<TX, T>) -> Vec<fuzzamoto_ir::Header> {
         inner
             .block_tree
@@ -119,7 +152,6 @@ where
             .collect()
     }
 
-    /// Dump the full program context either to Nyx host or to a file
     fn dump_context(
         context: ProgramContext,
         txos: Vec<fuzzamoto_ir::Txo>,
@@ -193,12 +225,36 @@ where
         Ok(())
     }
 
-    fn process_actions(&mut self, actions: Vec<CompiledAction>) {
+    /// Build the hybrid action sequence by interleaving P2P and RPC actions
+    fn build_hybrid_actions(&self, testcase: &TestCase) -> Vec<HybridAction> {
+        let mut hybrid_actions = Vec::new();
+        let total_actions = testcase.program.actions.len();
+
+        // Convert P2P actions
+        for (idx, action) in testcase.program.actions.iter().enumerate() {
+            // Check if we should insert an RPC call at this position
+            if testcase.rpc_call_points.contains(&idx) {
+                hybrid_actions.push(HybridAction::RpcGetMempoolInfo);
+            }
+            hybrid_actions.push(HybridAction::P2P(action.clone()));
+        }
+
+        // Add any remaining RPC calls at the end
+        for &call_point in &testcase.rpc_call_points {
+            if call_point >= total_actions {
+                hybrid_actions.push(HybridAction::RpcGetMempoolInfo);
+            }
+        }
+
+        hybrid_actions
+    }
+
+    fn process_hybrid_actions(&mut self, actions: Vec<HybridAction>) {
         for action in actions {
             match action {
-                CompiledAction::SendRawMessage(from, command, message) => {
+                HybridAction::P2P(CompiledAction::SendRawMessage(from, command, message)) => {
                     if self.inner.connections.is_empty() {
-                        return;
+                        continue;
                     }
 
                     let num_connections = self.inner.connections.len();
@@ -211,10 +267,13 @@ where
                         }
                     }
                 }
-                CompiledAction::SetTime(time) => {
+                HybridAction::P2P(CompiledAction::SetTime(time)) => {
                     let _ = self.inner.target.set_mocktime(time);
                     #[cfg(any(feature = "oracle_netsplit", feature = "oracle_consensus"))]
                     let _ = self.second.set_mocktime(time);
+                }
+                HybridAction::RpcGetMempoolInfo => {
+                    let _ = self.inner.target.call_rpc("getmempoolinfo", &[]);
                 }
                 _ => {}
             }
@@ -246,8 +305,6 @@ where
 
         #[cfg(feature = "oracle_consensus")]
         {
-            // Ensure the nodes are connected and eventually consistent (i.e. reach consensus
-            // on the chain tip).
             if !self.second.is_connected_to(&self.inner.target) {
                 let _ = self.second.connect_to(&self.inner.target);
             }
@@ -256,8 +313,6 @@ where
             if let OracleResult::Fail(e) = consensus_oracle.evaluate(&ConsensusContext {
                 primary: &self.inner.target,
                 reference: &self.second,
-                // Poll every 10 milliseconds and timeout after 60 seconds. This way hang detection
-                // will fĺag consensus bugs as hangs.
                 consensus_timeout: Duration::from_secs(60),
                 poll_interval: Duration::from_millis(10),
             }) {
@@ -272,7 +327,7 @@ where
 impl<TX, T> Scenario<'_, TestCase> for IrScenario<TX, T>
 where
     TX: Transport,
-    T: Target<TX> + HasTipHash + ConnectableTarget,
+    T: Target<TX> + HasTipHash + ConnectableTarget + CallRpc,
 {
     fn new(args: &[String]) -> Result<Self, String> {
         let inner: GenericScenario<TX, T> = GenericScenario::new(args)?;
@@ -296,7 +351,8 @@ where
     }
 
     fn run(&mut self, testcase: TestCase) -> ScenarioResult {
-        self.process_actions(testcase.program.actions);
+        let hybrid_actions = self.build_hybrid_actions(&testcase);
+        self.process_hybrid_actions(hybrid_actions);
         self.ping_connections();
         self.evaluate_oracles()
     }

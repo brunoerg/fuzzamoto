@@ -10,7 +10,7 @@ use std::{
     str::FromStr,
 };
 
-use super::{ConnectableTarget, HasTipHash};
+use super::{CallRpc, ConnectableTarget, HasTipHash};
 
 pub struct BitcoinCoreTarget {
     pub node: Node,
@@ -234,5 +234,18 @@ impl HasTipHash for BitcoinCoreTarget {
                 .map(|h| h.as_raw_hash().as_byte_array().clone()),
             Err(_) => None,
         }
+    }
+}
+
+impl CallRpc for BitcoinCoreTarget {
+    fn call_rpc(
+        &self,
+        method: &str,
+        params: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        self.node
+            .client
+            .call::<serde_json::Value>(method, params)
+            .map_err(|e| format!("RPC call failed: {}", e))
     }
 }
