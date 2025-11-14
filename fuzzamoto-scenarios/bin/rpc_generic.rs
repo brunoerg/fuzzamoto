@@ -7,6 +7,8 @@ use fuzzamoto::{
 use arbitrary::{Arbitrary, Unstructured};
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 #[derive(Arbitrary)]
 enum ParamSource<T> {
@@ -218,173 +220,38 @@ impl<'a> Scenario<'a, TestCase> for RpcScenario {
             .call::<serde_json::Value>("help", &["dump_all_command_conversions".into()])
             .unwrap();
 
-        // Get all available RPC names
-        //let mut available_rpcs = Vec::new();
-        //for conversion in result.as_array().unwrap() {
-        //    let rpc_name = conversion
-        //        .as_array()
-        //        .unwrap()
-        //        .get(0)
-        //        .unwrap()
-        //        .as_str()
-        //        .unwrap()
-        //        .to_string();
-        //    if rpc_name != "stop" {
-        //        available_rpcs.push(rpc_name);
-        //    }
-        //}
-        //available_rpcs.sort();
-        //available_rpcs.dedup();
-        let available_rpcs = vec![
-            "abandontransaction",
-            "addconnection",
-            "addmultisigaddress",
-            "addnode",
-            "addpeeraddress",
-            "analyzepsbt",
-            "backupwallet",
-            "bumpfee",
-            "combinepsbt",
-            "combinerawtransaction",
-            "converttopsbt",
-            "createmultisig",
-            "createpsbt",
-            "createrawtransaction",
-            "createwallet",
-            "createwalletdescriptor",
-            "decodepsbt",
-            "decoderawtransaction",
-            "decodescript",
-            "deriveaddresses",
-            "descriptorprocesspsbt",
-            "disconnectnode",
-            "dumpprivkey",
-            "dumptxoutset",
-            "dumpwallet",
-            "echo",
-            "echoipc",
-            "echojson",
-            "encryptwallet",
-            "estimaterawfee",
-            "estimatesmartfee",
-            "finalizepsbt",
-            "fundrawtransaction",
-            "generateblock",
-            "generatetoaddress",
-            "generatetodescriptor",
-            "getaddednodeinfo",
-            "getaddressesbylabel",
-            "getaddressinfo",
-            "getbalance",
-            "getblock",
-            "getblockfilter",
-            "getblockfrompeer",
-            "getblockhash",
-            "getblockheader",
-            "getblockstats",
-            "getblocktemplate",
-            "getchaintxstats",
-            "getdeploymentinfo",
-            "getdescriptoractivity",
-            "getdescriptorinfo",
-            "gethdkeys",
-            "getindexinfo",
-            "getmemoryinfo",
-            "getmempoolancestors",
-            "getmempooldescendants",
-            "getmempoolentry",
-            "getnetworkhashps",
-            "getnewaddress",
-            "getnodeaddresses",
-            "getorphantxs",
-            "getrawchangeaddress",
-            "getrawmempool",
-            "getrawtransaction",
-            "getreceivedbyaddress",
-            "getreceivedbylabel",
-            "gettransaction",
-            "gettxout",
-            "gettxoutproof",
-            "gettxoutsetinfo",
-            "gettxspendingprevout",
-            "help",
-            "importaddress",
-            "importdescriptors",
-            "importmempool",
-            "importmulti",
-            "importprivkey",
-            "importprunedfunds",
-            "importpubkey",
-            "importwallet",
-            "invalidateblock",
-            "joinpsbts",
-            "keypoolrefill",
-            "listdescriptors",
-            "listlabels",
-            "listreceivedbyaddress",
-            "listreceivedbylabel",
-            "listsinceblock",
-            "listtransactions",
-            "listunspent",
-            "loadtxoutset",
-            "loadwallet",
-            "lockunspent",
-            "logging",
-            "migratewallet",
-            "mockscheduler",
-            "preciousblock",
-            "prioritisetransaction",
-            "pruneblockchain",
-            "psbtbumpfee",
-            "reconsiderblock",
-            "removeprunedfunds",
-            "rescanblockchain",
-            "restorewallet",
-            "scanblocks",
-            "scantxoutset",
-            "send",
-            "sendall",
-            "sendmany",
-            "sendmsgtopeer",
-            "sendrawtransaction",
-            "sendtoaddress",
-            "setban",
-            "sethdseed",
-            "setlabel",
-            "setmocktime",
-            "setnetworkactive",
-            "settxfee",
-            "setwalletflag",
-            "signmessage",
-            "signmessagewithprivkey",
-            "signrawtransactionwithkey",
-            "signrawtransactionwithwallet",
-            "simulaterawtransaction",
-            "submitblock",
-            "submitheader",
-            "submitpackage",
-            "testmempoolaccept",
-            "unloadwallet",
-            "upgradewallet",
-            "utxoupdatepsbt",
-            "validateaddress",
-            "verifychain",
-            "verifymessage",
-            "verifytxoutproof",
-            "waitforblock",
-            "waitforblockheight",
-            "waitfornewblock",
-            "walletcreatefundedpsbt",
-            "walletdisplayaddress",
-            "walletpassphrase",
-            "walletpassphrasechange",
-            "walletprocesspsbt",
-        ]
-        .drain(..)
-        .map(String::from)
-        .collect();
-        log::debug!("{:?}", available_rpcs);
-        // TODO: get rid of hardcoded list above, without invalidating the existing seeds
+        let rpc_file_path = args
+            .get(2)
+            .map(|s| s.as_str())
+            .unwrap_or("rpc_commands.txt");
+
+        let file = File::open(rpc_file_path).map_err(|e| {
+            format!(
+                "Failed to open RPC commands file '{}': {}",
+                rpc_file_path, e
+            )
+        })?;
+
+        let reader = BufReader::new(file);
+        let mut available_rpcs = Vec::new();
+
+        for line in reader.lines() {
+            let line = line.map_err(|e| format!("Failed to read line: {}", e))?;
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                available_rpcs.push(trimmed.to_string());
+            }
+        }
+
+        if available_rpcs.is_empty() {
+            return Err(format!("No RPC commands found in '{}'", rpc_file_path));
+        }
+
+        log::info!(
+            "Loaded {} RPC commands: {:?}",
+            available_rpcs.len(),
+            available_rpcs
+        );
 
         Ok(Self {
             target,
