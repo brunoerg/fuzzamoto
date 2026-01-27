@@ -419,6 +419,7 @@ impl Compiler {
                 | Operation::SendGetData
                 | Operation::SendInv
                 | Operation::SendGetAddr
+                | Operation::SendGetTemplate
                 | Operation::SendAddr
                 | Operation::SendAddrV2
                 | Operation::SendHeader
@@ -1391,6 +1392,10 @@ impl Compiler {
             Operation::SendGetAddr => {
                 let connection_var = self.get_input::<usize>(&instruction.inputs, 0)?;
                 self.emit_send_raw_message(*connection_var, "getaddr", vec![]);
+            }
+            Operation::SendGetTemplate => {
+                let connection_var = self.get_input::<usize>(&instruction.inputs, 0)?;
+                self.emit_send_raw_message(*connection_var, "gettemplate", vec![]);
             }
             Operation::SendAddr => {
                 let connection_var = self.get_input::<usize>(&instruction.inputs, 0)?;

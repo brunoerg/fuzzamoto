@@ -163,6 +163,7 @@ pub enum Operation {
     SendGetData,
     SendInv,
     SendGetAddr,
+    SendGetTemplate,
     SendAddr,
     SendAddrV2,
     SendTx,
@@ -381,6 +382,7 @@ impl fmt::Display for Operation {
             Operation::SendGetAddr => write!(f, "SendGetAddr"),
             Operation::SendAddr => write!(f, "SendAddr"),
             Operation::SendAddrV2 => write!(f, "SendAddrV2"),
+            Operation::SendGetTemplate => write!(f, "SendGetTemplate"),
             Operation::SendTx => write!(f, "SendTx"),
             Operation::SendTxNoWit => write!(f, "SendTxNoWit"),
             Operation::SendHeader => write!(f, "SendHeader"),
@@ -524,6 +526,7 @@ impl Operation {
             | Operation::SendGetData
             | Operation::SendInv
             | Operation::SendGetAddr
+            | Operation::SendGetTemplate
             | Operation::SendAddr
             | Operation::SendAddrV2
             | Operation::AddTxInput
@@ -673,6 +676,7 @@ impl Operation {
             | Operation::SendGetAddr
             | Operation::SendAddr
             | Operation::SendAddrV2
+            | Operation::SendGetTemplate
             | Operation::SendTx
             | Operation::SendTxNoWit
             | Operation::SendHeader
@@ -847,6 +851,7 @@ impl Operation {
             Operation::SendGetData => vec![],
             Operation::SendInv => vec![],
             Operation::SendGetAddr => vec![],
+            Operation::SendGetTemplate => vec![],
             Operation::SendAddr => vec![],
             Operation::SendAddrV2 => vec![],
             Operation::SendHeader => vec![],
@@ -950,6 +955,7 @@ impl Operation {
                 vec![Variable::Connection, Variable::ConstInventory]
             }
             Operation::SendGetAddr => vec![Variable::Connection],
+            Operation::SendGetTemplate => vec![Variable::Connection],
             Operation::SendAddr => vec![Variable::Connection, Variable::ConstAddrList],
             Operation::SendAddrV2 => vec![Variable::Connection, Variable::ConstAddrListV2],
             Operation::SendHeader => vec![Variable::Connection, Variable::Header],
@@ -1127,6 +1133,7 @@ impl Operation {
             | Operation::SendGetAddr
             | Operation::SendAddr
             | Operation::SendAddrV2
+            | Operation::SendGetTemplate
             | Operation::SendTx
             | Operation::SendTxNoWit
             | Operation::SendHeader

@@ -141,6 +141,7 @@ impl Instruction {
             | Operation::SendAddrV2
             | Operation::SendHeader
             | Operation::SendBlock
+            | Operation::SendGetTemplate
             | Operation::SendBlockNoWit
             | Operation::SendGetCFilters
             | Operation::SendGetCFHeaders
