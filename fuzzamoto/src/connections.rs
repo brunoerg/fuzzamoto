@@ -301,6 +301,7 @@ pub struct HandshakeOpts {
     pub wtxidrelay: bool,
     pub addrv2: bool,
     pub erlay: bool,
+    pub sharetemplate: bool,
 }
 
 impl<T: Transport> Connection<T> {
@@ -398,6 +399,9 @@ impl<T: Transport> Connection<T> {
         }
         if opts.addrv2 {
             self.transport.send(&("sendaddrv2".to_string(), vec![]))?;
+        }
+        if opts.sharetemplate {
+            self.transport.send(&("sendtemplate".to_string(), vec![]))?;
         }
         if opts.erlay {
             let version = 1u32;

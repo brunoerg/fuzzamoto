@@ -83,16 +83,11 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
                 true,
                 true,
                 false,
-            ),
-            (
-                target.connect(ConnectionType::Outbound)?,
-                true,
-                true,
-                false,
                 true,
             ),
             (
                 target.connect(ConnectionType::Outbound)?,
+                true,
                 true,
                 false,
                 true,
@@ -100,10 +95,19 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
             ),
             (
                 target.connect(ConnectionType::Outbound)?,
+                true,
+                false,
+                true,
+                true,
+                true,
+            ),
+            (
+                target.connect(ConnectionType::Outbound)?,
                 false,
                 false,
                 true,
                 false,
+                true,
             ),
             (
                 target.connect(ConnectionType::Inbound)?,
@@ -111,16 +115,11 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
                 true,
                 true,
                 true,
-            ),
-            (
-                target.connect(ConnectionType::Inbound)?,
-                true,
-                true,
-                false,
                 true,
             ),
             (
                 target.connect(ConnectionType::Inbound)?,
+                true,
                 true,
                 false,
                 true,
@@ -128,15 +127,24 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
             ),
             (
                 target.connect(ConnectionType::Inbound)?,
+                true,
+                false,
+                true,
+                true,
+                true,
+            ),
+            (
+                target.connect(ConnectionType::Inbound)?,
                 false,
                 false,
                 true,
                 false,
+                true,
             ),
         ];
 
         let mut send_compact = false;
-        for (connection, relay, wtxidrelay, addrv2, erlay) in connections.iter_mut() {
+        for (connection, relay, wtxidrelay, addrv2, erlay, sharetemplate) in connections.iter_mut() {
             connection.version_handshake(HandshakeOpts {
                 time: time as i64,
                 relay: *relay,
@@ -144,6 +152,7 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
                 wtxidrelay: *wtxidrelay,
                 addrv2: *addrv2,
                 erlay: *erlay,
+                sharetemplate: *sharetemplate,
             })?;
             let sendcmpct = NetworkMessage::SendCmpct(SendCmpct {
                 version: 2,
@@ -193,12 +202,12 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
         let result = String::from_utf8(output.into_inner()).unwrap();
         println!("{}", result);
 
-        for (connection, _, _, _, _) in connections.iter_mut() {
+        for (connection, _, _, _, _, _) in connections.iter_mut() {
             connection.ping()?;
         }
 
         // Announce the tip on all connections
-        for (connection, _, _, _, _) in connections.iter_mut() {
+        for (connection, _, _, _, _, _) in connections.iter_mut() {
             let inv = NetworkMessage::Inv(vec![Inventory::Block(prev_hash)]);
             connection.send_and_recv(&("inv".to_string(), encode::serialize(&inv)), false)?;
         }
@@ -206,7 +215,7 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
         Ok(Self {
             target,
             time,
-            connections: connections.drain(..).map(|(c, _, _, _, _)| c).collect(),
+            connections: connections.drain(..).map(|(c, _, _, _, _, _)| c).collect(),
             block_tree,
             _phantom: std::marker::PhantomData,
         })
