@@ -322,6 +322,10 @@ impl Compiler {
                     self.handle_build_taproot_tree(&instruction)?;
                 }
 
+                Operation::BuildTemplate => {
+
+                }
+
                 Operation::BuildCompactBlock => {
                     self.handle_compact_block_building_operations(&instruction)?;
                 }
@@ -432,6 +436,7 @@ impl Compiler {
                 | Operation::SendFilterAdd
                 | Operation::SendFilterClear
                 | Operation::SendCompactBlock
+                | Operation::SendTemplate
                 | Operation::SendBlockTxn => {
                     self.handle_message_sending_operations(&instruction)?;
                 }

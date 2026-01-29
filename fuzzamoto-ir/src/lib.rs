@@ -322,6 +322,15 @@ impl fmt::Display for Program {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GetTemplate {
+    /// Variable index of the connection
+    pub connection_index: usize,
+    /// Index of the instruction that triggered the node under test to send a gettemplate
+    /// message
+    pub triggering_instruction_index: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GetBlockTxn {
     /// Variable index of the connection
     pub connection_index: usize,

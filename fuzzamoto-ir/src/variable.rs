@@ -26,6 +26,8 @@ pub enum Variable {
     PrivateKey,
     SigHashFlags,
 
+    ConstTemplate,
+
     Txo, // Existing transaction output (maybe confirmed)
 
     MutTx,          // Mutable transaction

@@ -77,6 +77,9 @@ pub enum Operation {
     AddTxToBlockTxn,
     EndBuildBlockTxn,
 
+    SendTemplate,
+    BuildTemplate,
+
     /// Send a message given a connection, message type and bytes
     SendRawMessage,
     /// Advance a time variable by a given duration
@@ -243,6 +246,8 @@ impl fmt::Display for Operation {
             Operation::AdvanceTime => write!(f, "AdvanceTime"),
             Operation::LoadTime(time) => write!(f, "LoadTime({})", time),
             Operation::SetTime => write!(f, "SetTime"),
+            Operation::BuildTemplate => write!(f, "BuildTemplate"),
+            Operation::SendTemplate => write!(f, "SendTemplate"),
             Operation::BuildRawScripts => write!(f, "BuildRawScripts"),
             Operation::BuildPayToWitnessScriptHash => write!(f, "BuildPayToWitnessScriptHash"),
             Operation::BuildPayToScriptHash => write!(f, "BuildPayToScriptHash"),
@@ -523,6 +528,8 @@ impl Operation {
             | Operation::AddWtxidInv
             | Operation::AddAddr
             | Operation::AddAddrV2
+            | Operation::SendTemplate
+            | Operation::BuildTemplate
             | Operation::SendGetData
             | Operation::SendInv
             | Operation::SendGetAddr
@@ -665,6 +672,9 @@ impl Operation {
             | Operation::AddWtxidInv
             | Operation::AddAddr
             | Operation::AddAddrV2
+            | Operation::SendGetTemplate
+            | Operation::SendTemplate
+            | Operation::BuildTemplate
             | Operation::BuildBlock
             | Operation::AddBlockInv
             | Operation::AddBlockWithWitnessInv
@@ -676,7 +686,6 @@ impl Operation {
             | Operation::SendGetAddr
             | Operation::SendAddr
             | Operation::SendAddrV2
-            | Operation::SendGetTemplate
             | Operation::SendTx
             | Operation::SendTxNoWit
             | Operation::SendHeader
@@ -831,6 +840,9 @@ impl Operation {
             Operation::EndBuildAddrListV2 => vec![Variable::ConstAddrListV2],
             Operation::AddAddrV2 => vec![],
 
+            Operation::SendTemplate => vec![],
+            Operation::BuildTemplate => vec![Variable::ConstTemplate],
+
             Operation::BeginWitnessStack => vec![],
             Operation::EndWitnessStack => vec![Variable::ConstWitnessStack],
             Operation::AddWitness => vec![],
@@ -878,6 +890,9 @@ impl Operation {
             Operation::SetTime => vec![Variable::Time],
             Operation::BuildPayToWitnessScriptHash => {
                 vec![Variable::Bytes, Variable::ConstWitnessStack]
+            }
+            Operation::BuildTemplate => {
+                vec![Variable::Bytes]
             }
             Operation::BuildPayToScriptHash => vec![Variable::Bytes, Variable::ConstWitnessStack],
             Operation::BuildRawScripts => vec![
@@ -956,6 +971,7 @@ impl Operation {
             }
             Operation::SendGetAddr => vec![Variable::Connection],
             Operation::SendGetTemplate => vec![Variable::Connection],
+            Operation::SendTemplate => vec![Variable::Connection, Variable::ConstTemplate],
             Operation::SendAddr => vec![Variable::Connection, Variable::ConstAddrList],
             Operation::SendAddrV2 => vec![Variable::Connection, Variable::ConstAddrListV2],
             Operation::SendHeader => vec![Variable::Connection, Variable::Header],
@@ -1081,6 +1097,8 @@ impl Operation {
             | Operation::BuildPayToPubKey
             | Operation::BuildPayToPubKeyHash
             | Operation::BuildPayToWitnessPubKeyHash
+            | Operation::SendTemplate
+            | Operation::BuildTemplate
             | Operation::EndBuildFilterLoad
             | Operation::AddTxToFilter
             | Operation::AddTxoToFilter

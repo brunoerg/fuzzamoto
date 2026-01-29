@@ -142,6 +142,8 @@ impl Instruction {
             | Operation::SendHeader
             | Operation::SendBlock
             | Operation::SendGetTemplate
+            | Operation::SendTemplate
+            | Operation::BuildTemplate
             | Operation::SendBlockNoWit
             | Operation::SendGetCFilters
             | Operation::SendGetCFHeaders

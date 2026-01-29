@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{GetBlockTxn, RecentBlock};
+use crate::{GetBlockTxn, GetTemplate, RecentBlock};
 
 /// The runtime data observed during the course of harness execution
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct PerTestcaseMetadata {
     pub block_txn_request: Vec<GetBlockTxn>,
+    pub template_request: Vec<GetTemplate>,
     pub recent_blocks: Vec<RecentBlock>,
 }
 
@@ -13,12 +14,17 @@ impl PerTestcaseMetadata {
     pub fn new() -> Self {
         Self {
             block_txn_request: Vec::new(),
+            template_request: Vec::new(),
             recent_blocks: Vec::new(),
         }
     }
 
     pub fn block_txn_request(&self) -> &[GetBlockTxn] {
         &self.block_txn_request
+    }
+
+    pub fn template_request(&self) -> &[GetTemplate] {
+        &self.template_request
     }
 
     pub fn recent_blocks(&self) -> &[RecentBlock] {

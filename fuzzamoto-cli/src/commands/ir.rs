@@ -6,7 +6,7 @@ use fuzzamoto_ir::{
     AddTxToBlockGenerator, AddrRelayGenerator, AddrRelayV2Generator, AdvanceTimeGenerator,
     BlockGenerator, BloomFilterAddGenerator, BloomFilterClearGenerator, BloomFilterLoadGenerator,
     CompactFilterQueryGenerator, FullProgramContext, Generator, GetAddrGenerator, GetDataGenerator,
-    GetTemplateGenerator, HeaderGenerator, InstructionContext, InventoryGenerator,
+    GetTemplateGenerator, TemplateGenerator, HeaderGenerator, InstructionContext, InventoryGenerator,
     LargeTxGenerator, LongChainGenerator, OneParentOneChildGenerator, Program, ProgramBuilder,
     SendBlockGenerator, SendMessageGenerator, SingleTxGenerator, TxoGenerator, WitnessGenerator,
 };
@@ -207,6 +207,7 @@ fn all_generators(context: &FullProgramContext) -> Vec<Box<dyn Generator<ThreadR
         Box::new(CompactFilterQueryGenerator::default()),
         Box::new(GetDataGenerator::default()),
         Box::new(GetTemplateGenerator::default()),
+        Box::new(TemplateGenerator::default()),
         Box::new(InventoryGenerator::default()),
         Box::new(SendBlockGenerator::default()),
         Box::new(AddTxToBlockGenerator::default()),
