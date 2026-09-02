@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 fuzz = ["reduced_pow"]
 reproduce = ["reduced_pow"]
+erlay = ["fuzzamoto/erlay"]
 
 reduced_pow = []
 
@@ -30,4 +31,8 @@ criterion = "0.8"
 
 [[bench]]
 name = "builder_bench"
+harness = false
+
+[[bench]]
+name = "compiler_bench"
 harness = false
