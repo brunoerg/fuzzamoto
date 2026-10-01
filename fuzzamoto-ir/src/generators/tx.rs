@@ -1,5 +1,5 @@
 use crate::{
-    IndexedVariable, Operation, PerTestcaseMetadata, TaprootLeafSpec,
+    IndexedVariable, Operation, PerTestcaseMetadata, ScriptIntEncoding, TaprootLeafSpec,
     generators::{Generator, ProgramBuilder},
 };
 use bitcoin::{
@@ -553,20 +553,38 @@ fn build_bare_multi_scripts<R: RngCore>(
     builder: &mut ProgramBuilder,
     rng: &mut R,
 ) -> IndexedVariable {
-    let n = rng.gen_range(1u8..=3u8);
+    // Encoded variants (non-minimal pushes, more than 3 keys) are non-standard, so transactions
+    // creating them only confirm in blocks. With `allow_invalid` they may also be unspendable.
+    let encoded = rng.gen_bool(0.3);
+    let n = if encoded {
+        match rng.gen_range(0..4) {
+            0 => *[3u8, 4, 16, 17, 20].choose(rng).unwrap(),
+            1 => rng.gen_range(21u8..=22),
+            _ => rng.gen_range(1u8..=20),
+        }
+    } else {
+        rng.gen_range(1u8..=3u8)
+    };
     let required = rng.gen_range(1u8..=n);
     let private_keys: Vec<[u8; 32]> = (0..n).map(|_| gen_secret_key_bytes(rng)).collect();
 
     let sighash_flags_var =
         builder.force_append_expect_output(vec![], &Operation::LoadSigHashFlags(1));
 
-    builder.force_append_expect_output(
-        vec![sighash_flags_var.index],
-        &Operation::BuildPayToBareMulti {
+    let operation = if encoded {
+        Operation::BuildPayToBareMultiEncoded {
             required,
             private_keys,
-        },
-    )
+            required_encoding: ScriptIntEncoding::random(rng),
+            key_count_encoding: ScriptIntEncoding::random(rng),
+        }
+    } else {
+        Operation::BuildPayToBareMulti {
+            required,
+            private_keys,
+        }
+    };
+    builder.force_append_expect_output(vec![sighash_flags_var.index], &operation)
 }
 
 fn gen_secret_key_bytes<R: RngCore>(rng: &mut R) -> [u8; 32] {
