@@ -228,6 +228,14 @@ fn build_control_block(
     control
 }
 
+/// A legacy (pre-segwit) signature push: DER followed by the sighash byte the digest was computed
+/// with. Bitcoin Core recomputes the digest from this byte, so it must not be normalized.
+fn legacy_signature_bytes(signature: &secp256k1::ecdsa::Signature, sighash_flag: u8) -> Vec<u8> {
+    let mut bytes = signature.serialize_der().to_vec();
+    bytes.push(sighash_flag);
+    bytes
+}
+
 #[derive(Clone, Debug)]
 struct Txo {
     prev_out: ([u8; 32], u32),
@@ -2209,19 +2217,17 @@ impl Compiler {
                                     Script::from_bytes(&txo_var.scripts.script_pubkey),
                                     u32::from(sighash_flag),
                                 ) {
-                                    let signature = ecdsa::Signature {
-                                        signature: self.secp_ctx.sign_ecdsa(
+                                    let signature = legacy_signature_bytes(
+                                        &self.secp_ctx.sign_ecdsa(
                                             &secp256k1::Message::from_digest(*hash.as_byte_array()),
                                             &SecretKey::from_slice(private_key.as_slice()).unwrap(),
                                         ),
-                                        sighash_type: EcdsaSighashType::from_consensus(u32::from(
-                                            sighash_flag,
-                                        )),
-                                    };
-
-                                    tx_var.tx.input[idx].script_sig.push_slice(
-                                        PushBytesBuf::try_from(signature.to_vec()).unwrap(),
+                                        sighash_flag,
                                     );
+
+                                    tx_var.tx.input[idx]
+                                        .script_sig
+                                        .push_slice(PushBytesBuf::try_from(signature).unwrap());
                                 }
                             }
                             Operation::BuildPayToWitnessPubKeyHash => {
@@ -2253,8 +2259,6 @@ impl Compiler {
                         sighash_var,
                     } => {
                         let sighash_flag = *self.get_variable::<u8>(*sighash_var).unwrap();
-                        let sighash_type =
-                            EcdsaSighashType::from_consensus(u32::from(sighash_flag));
 
                         // scriptPubKey is already on the txo; use it for signing
                         let script_code = Script::from_bytes(&txo_var.scripts.script_pubkey);
@@ -2269,16 +2273,15 @@ impl Compiler {
                                 script_code,
                                 u32::from(sighash_flag),
                             ) {
-                                let signature = ecdsa::Signature {
-                                    signature: self.secp_ctx.sign_ecdsa(
+                                let signature = legacy_signature_bytes(
+                                    &self.secp_ctx.sign_ecdsa(
                                         &secp256k1::Message::from_digest(*hash.as_byte_array()),
                                         &SecretKey::from_slice(sk_bytes.as_slice()).unwrap(),
                                     ),
-                                    sighash_type,
-                                };
-                                sig_script_builder = sig_script_builder.push_slice(
-                                    PushBytesBuf::try_from(signature.to_vec()).unwrap(),
+                                    sighash_flag,
                                 );
+                                sig_script_builder = sig_script_builder
+                                    .push_slice(PushBytesBuf::try_from(signature).unwrap());
                             }
                         }
 
@@ -2929,6 +2932,53 @@ mod tests {
             vec![mut_tx.index, const_inputs.index, const_outputs.index],
             &Operation::EndBuildTx,
         )
+    }
+
+    #[test]
+    fn compile_legacy_signature_keeps_raw_sighash_byte() {
+        // Bitcoin Core recomputes the digest from the signature's last byte, so a non-standard
+        // sighash flag must be appended as-is rather than normalized.
+        let key = [1u8; 32];
+        let mut builder = ProgramBuilder::new(test_context());
+        let conn = builder.force_append_expect_output(vec![], &Operation::LoadConnection(0));
+        let txo = append_op_true_txo(&mut builder, [9u8; 32], 100_000);
+        let sighash = builder.force_append_expect_output(vec![], &Operation::LoadSigHashFlags(0));
+        let scripts = builder.force_append_expect_output(
+            vec![sighash.index],
+            &Operation::BuildPayToBareMulti {
+                required: 1,
+                private_keys: vec![key],
+            },
+        );
+        let funding =
+            build_single_output_tx_for_tests(&mut builder, txo.index, scripts.index, 90_000);
+        builder.force_append(vec![conn.index, funding.index], &Operation::SendTx);
+        let multisig_txo =
+            builder.force_append_expect_output(vec![funding.index], &Operation::TakeTxo);
+        let spending = build_single_input_transaction(&mut builder, multisig_txo.index, 80_000);
+        builder.force_append(vec![conn.index, spending.index], &Operation::SendTx);
+        let program = builder.finalize().expect("valid program");
+        let (funding, spending) = (compiled_tx_at(&program, 0), compiled_tx_at(&program, 1));
+
+        let push = spending.input[0]
+            .script_sig
+            .instructions()
+            .nth(1)
+            .and_then(|i| i.ok()?.push_bytes().map(|b| b.as_bytes().to_vec()))
+            .expect("signature push");
+        let (der, sighash_byte) = push.split_at(push.len() - 1);
+        assert_eq!(sighash_byte, [0x00]);
+
+        let secp = Secp256k1::new();
+        let sighash = SighashCache::new(&spending)
+            .legacy_signature_hash(0, &funding.output[0].script_pubkey, 0)
+            .expect("sighash");
+        secp.verify_ecdsa(
+            &secp256k1::Message::from_digest(*sighash.as_byte_array()),
+            &secp256k1::ecdsa::Signature::from_der(der).expect("DER"),
+            &SecretKey::from_slice(&key).unwrap().public_key(&secp),
+        )
+        .expect("signature verifies against the digest for flag 0");
     }
 
     fn test_context() -> ProgramContext {

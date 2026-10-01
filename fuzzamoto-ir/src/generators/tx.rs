@@ -101,7 +101,7 @@ fn build_outputs<R: RngCore>(
                 let private_key_var = builder
                     .force_append_expect_output(vec![], &Operation::LoadPrivateKey([0x41u8; 32]));
                 let sighash_flags_var =
-                    builder.force_append_expect_output(vec![], &Operation::LoadSigHashFlags(0));
+                    builder.force_append_expect_output(vec![], &Operation::LoadSigHashFlags(1));
 
                 let op = match output_type {
                     OutputType::PayToPubKey => Operation::BuildPayToPubKey,
@@ -558,7 +558,7 @@ fn build_bare_multi_scripts<R: RngCore>(
     let private_keys: Vec<[u8; 32]> = (0..n).map(|_| gen_secret_key_bytes(rng)).collect();
 
     let sighash_flags_var =
-        builder.force_append_expect_output(vec![], &Operation::LoadSigHashFlags(0));
+        builder.force_append_expect_output(vec![], &Operation::LoadSigHashFlags(1));
 
     builder.force_append_expect_output(
         vec![sighash_flags_var.index],
