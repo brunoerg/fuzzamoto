@@ -50,9 +50,9 @@ impl<'a> ScenarioInput<'a> for TestCase {
 /// `GenericScenario` is an implementation agnostic scenario testing the p2p interface of a target
 /// node.
 ///
-/// The scenario setup creates a couple of connections to the target node and mines a chain of 200
-/// blocks. Testcases simulate the processing of a series of messages by the target node, i.e. each
-/// testcase represents a series of three types of actions:
+/// The scenario setup creates a couple of connections to the target node and mines a chain of
+/// [`SETUP_CHAIN_HEIGHT`] blocks. Testcases simulate the processing of a series of messages by the
+/// target node, i.e. each testcase represents a series of three types of actions:
 ///
 /// 1. Send a message to the target node through one of the existing connections
 /// 2. Open a new p2p connection
@@ -70,6 +70,31 @@ pub struct GenericScenario<TX: Transport, T: Target<TX>> {
 }
 
 const INTERVAL: u64 = 1;
+
+/// Height of the chain mined during setup.
+///
+/// Bitcoin Core only stores headers whose chain has at least as much work as
+/// `GetAntiDoSWorkThreshold()`, i.e. the tip's work minus 144 blocks worth of work (or
+/// `-minimumchainwork`, if higher). Every regtest block adds 2 to the chain work, so with a tip at
+/// this height a fork below [`MAX_LOW_WORK_FORK_HEIGHT`] that is sent as one full `headers`
+/// message (2000 headers) stays below the threshold and starts a low-work headers sync
+/// (headerssync.cpp), while a second full message exceeds it and moves the sync into its
+/// redownload phase. This exercises the headers presync logic without raising
+/// `-minimumchainwork`, which would keep the node in IBD.
+pub const SETUP_CHAIN_HEIGHT: u32 = 2500;
+
+/// Bitcoin Core's `MAX_HEADERS_RESULTS`.
+const MAX_HEADERS_RESULTS: u32 = 2000;
+
+/// Highest fork point from which one full `headers` message still starts a low-work headers sync
+/// against the setup tip: `2 * (h + 1) + 2 * 2000 < 2 * (SETUP_CHAIN_HEIGHT + 1 - 144)`.
+pub const MAX_LOW_WORK_FORK_HEIGHT: u32 = SETUP_CHAIN_HEIGHT - 144 - MAX_HEADERS_RESULTS - 1;
+
+/// Blocks mined during setup between announcements of the tip on all connections. The node
+/// disconnects outbound peers whose best known block lags behind its tip for 20 minutes (plus a
+/// 2 minute `getheaders` grace period), and the mocktime advances by `INTERVAL` per block, so the
+/// tip has to be announced well within that.
+const TIP_ANNOUNCEMENT_INTERVAL: u32 = 100;
 
 impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
     fn from_target(mut target: T) -> Result<Self, String> {
@@ -161,7 +186,7 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
         let mut dictionary = FileDictionary::new();
 
         let mut block_tree = BTreeMap::new();
-        for height in 1..=200 {
+        for height in 1..=SETUP_CHAIN_HEIGHT {
             time += INTERVAL;
 
             let block = test_utils::mining::mine_block(
@@ -191,6 +216,16 @@ impl<TX: Transport, T: Target<TX>> GenericScenario<TX, T> {
             );
 
             block_tree.insert(prev_hash, (block, height));
+
+            if height % TIP_ANNOUNCEMENT_INTERVAL == 0 {
+                // Make sure the block was processed before announcing it, otherwise the node
+                // would request it from the other connections.
+                connections[0].0.ping()?;
+                for (connection, _, _, _, _) in &mut connections {
+                    let inv = NetworkMessage::Inv(vec![Inventory::Block(prev_hash)]);
+                    connection.send(&("inv".to_string(), encode::serialize(&inv)))?;
+                }
+            }
         }
 
         let mut output = std::io::Cursor::new(Vec::new());

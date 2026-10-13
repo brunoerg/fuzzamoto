@@ -382,7 +382,10 @@ where
             (
                 10.0,
                 IrGenerator::new(
-                    HeaderChainGenerator::new(full_program_context.headers.clone()),
+                    HeaderChainGenerator::new(
+                        full_program_context.headers.clone(),
+                        full_program_context.low_work_headers.clone(),
+                    ),
                     rng.clone()
                 )
             ),

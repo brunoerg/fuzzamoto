@@ -62,6 +62,10 @@ pub struct FullProgramContext {
     pub txos: Vec<Txo>,
     /// List of headers present in the snapshotted state
     pub headers: Vec<Header>,
+    /// Headers present in the snapshotted state that are deep enough below the tip that a fork
+    /// from them sent as one full `headers` message has less work than the node's anti-DoS
+    /// threshold, i.e. starts a low-work headers sync
+    pub low_work_headers: Vec<Header>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, Hash)]

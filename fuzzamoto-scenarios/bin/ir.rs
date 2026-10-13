@@ -15,7 +15,10 @@ use fuzzamoto::{
     connections::Transport,
     fuzzamoto_main,
     oracles::{CrashOracle, Oracle, OracleResult},
-    scenarios::{Scenario, ScenarioInput, ScenarioResult, generic::GenericScenario},
+    scenarios::{
+        Scenario, ScenarioInput, ScenarioResult,
+        generic::{GenericScenario, MAX_LOW_WORK_FORK_HEIGHT, SETUP_CHAIN_HEIGHT},
+    },
     targets::{
         BitcoinCoreTarget, ConnectableTarget, GenerateToAddress, HasBlockChainInterface, Target,
     },
@@ -52,7 +55,12 @@ type ScenarioTransport = fuzzamoto::connections::V1Transport;
 type ScenarioTransport = fuzzamoto::connections::V2Transport;
 
 const COINBASE_MATURITY_HEIGHT_LIMIT: u32 = 100;
-const LATE_BLOCK_HEIGHT_LIMIT: u32 = 190;
+const LATE_BLOCK_HEIGHT_LIMIT: u32 = SETUP_CHAIN_HEIGHT - 10;
+/// Only every n-th low-work header is put in the context, since the exact fork point matters little
+const LOW_WORK_HEADER_STRIDE: u32 = 10;
+/// Start of a `headers` message with `MAX_HEADERS_RESULTS` (2000) headers: the compact size of the
+/// header count. Only such messages can start a low-work headers sync.
+const FULL_HEADERS_MESSAGE_PREFIX: [u8; 3] = [0xfd, 0xd0, 0x07];
 const COINBASE_VALUE: u64 = 25 * 100_000_000;
 // OP_TRUE script pubkey: 0x0 0x20 sha256(OP_TRUE)
 const OP_TRUE_SCRIPT_PUBKEY: [u8; 34] = [
@@ -73,6 +81,8 @@ struct IrScenario<TX: Transport, T: Target<TX> + ConnectableTarget> {
     #[cfg(any(feature = "oracle_netsplit", feature = "oracle_consensus"))]
     second: T,
     futurest: u64,
+    /// Current mocktime of the target(s)
+    time: u64,
 }
 
 #[cfg(feature = "nyx")]
@@ -341,12 +351,15 @@ where
         txos
     }
 
-    /// Extract block headers from late blocks (height > 190) for use in IR programs
-    fn build_headers(inner: &GenericScenario<TX, T>) -> Vec<fuzzamoto_ir::Header> {
+    /// Extract the headers of the setup blocks at the heights selected by `filter`
+    fn build_headers_where(
+        inner: &GenericScenario<TX, T>,
+        filter: impl Fn(u32) -> bool,
+    ) -> Vec<fuzzamoto_ir::Header> {
         inner
             .block_tree
             .values()
-            .filter(|(_, height)| *height > LATE_BLOCK_HEIGHT_LIMIT)
+            .filter(|(_, height)| filter(*height))
             .map(|(block, height)| fuzzamoto_ir::Header {
                 prev: *block.header.prev_blockhash.as_byte_array(),
                 merkle_root: *block.header.merkle_root.as_byte_array(),
@@ -359,16 +372,33 @@ where
             .collect()
     }
 
+    /// Extract block headers from late blocks (the last 10 blocks) for use in IR programs. Forks
+    /// from much further below the tip have less work than the node's anti-DoS threshold, so most
+    /// headers and blocks built on them would be ignored.
+    fn build_headers(inner: &GenericScenario<TX, T>) -> Vec<fuzzamoto_ir::Header> {
+        Self::build_headers_where(inner, |height| height > LATE_BLOCK_HEIGHT_LIMIT)
+    }
+
+    /// Extract block headers deep enough below the tip that a fork from them sent as one full
+    /// `headers` message starts a low-work headers sync
+    fn build_low_work_headers(inner: &GenericScenario<TX, T>) -> Vec<fuzzamoto_ir::Header> {
+        Self::build_headers_where(inner, |height| {
+            height <= MAX_LOW_WORK_FORK_HEIGHT && height % LOW_WORK_HEADER_STRIDE == 0
+        })
+    }
+
     /// Dump the full program context either to Nyx host or to a file
     fn dump_context(
         context: ProgramContext,
         txos: Vec<fuzzamoto_ir::Txo>,
         headers: Vec<fuzzamoto_ir::Header>,
+        low_work_headers: Vec<fuzzamoto_ir::Header>,
     ) -> Result<(), String> {
         let full_context = postcard::to_allocvec(&fuzzamoto_ir::FullProgramContext {
             context,
             txos,
             headers,
+            low_work_headers,
         })
         .map_err(|e| e.to_string())?;
 
@@ -501,6 +531,20 @@ where
                     let num_connections = self.inner.connections.len();
                     let dst = from % num_connections;
 
+                    // A low-work headers sync aborts the node if the clock is more than two hours
+                    // behind the median time past of the header the sync starts from. The node
+                    // only accepts headers less than two hours ahead of its clock, so moving the
+                    // clock to the latest time it was set to before a full `headers` message
+                    // prevents this false positive, while still letting the clock go backwards
+                    // elsewhere.
+                    let latest_time = self.futurest.max(self.inner.time);
+                    if command == "headers"
+                        && message.starts_with(&FULL_HEADERS_MESSAGE_PREFIX)
+                        && self.time < latest_time
+                    {
+                        self.set_time(latest_time);
+                    }
+
                     if let Some(connection) = self.inner.connections.get_mut(dst) {
                         if cfg!(feature = "force_send_and_ping") {
                             if let Ok(received) = connection.send_and_recv(
@@ -529,15 +573,20 @@ where
                     self.recording_received_messages = true;
                 }
                 CompiledAction::SetTime(time) => {
-                    let _ = self.inner.target.set_mocktime(time);
-                    #[cfg(any(feature = "oracle_netsplit", feature = "oracle_consensus"))]
-                    let _ = self.second.set_mocktime(time);
+                    self.set_time(time);
                     non_probe_action_count += 1;
-
-                    self.futurest = std::cmp::max(self.futurest, time);
                 }
             }
         }
+    }
+
+    fn set_time(&mut self, time: u64) {
+        let _ = self.inner.target.set_mocktime(time);
+        #[cfg(any(feature = "oracle_netsplit", feature = "oracle_consensus"))]
+        let _ = self.second.set_mocktime(time);
+
+        self.time = time;
+        self.futurest = std::cmp::max(self.futurest, time);
     }
 
     fn print_received(&mut self) {
@@ -721,13 +770,15 @@ where
 {
     fn new(args: &[String]) -> Result<Self, String> {
         let inner: GenericScenario<TX, T> = GenericScenario::new(args)?;
+        let inner_time = inner.time;
 
         let context = Self::build_program_context(&inner);
         log::info!("IR context: {context:?}");
 
         let txos = Self::build_txos(&inner);
         let headers = Self::build_headers(&inner);
-        Self::dump_context(context, txos, headers)?;
+        let low_work_headers = Self::build_low_work_headers(&inner);
+        Self::dump_context(context, txos, headers, low_work_headers)?;
 
         #[cfg(any(feature = "oracle_netsplit", feature = "oracle_consensus"))]
         let second = Self::create_and_sync_second_target(args, &inner.target)?;
@@ -743,6 +794,7 @@ where
             #[cfg(any(feature = "oracle_netsplit", feature = "oracle_consensus"))]
             second,
             futurest: u64::from(genesis_time),
+            time: inner_time,
         })
     }
 

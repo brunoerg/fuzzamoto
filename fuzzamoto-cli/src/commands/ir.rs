@@ -198,7 +198,10 @@ fn all_generators(context: &FullProgramContext) -> Vec<Box<dyn Generator<ThreadR
     vec![
         Box::new(AdvanceTimeGenerator::default()),
         Box::new(HeaderGenerator::new(context.headers.clone())),
-        Box::new(HeaderChainGenerator::new(context.headers.clone())),
+        Box::new(HeaderChainGenerator::new(
+            context.headers.clone(),
+            context.low_work_headers.clone(),
+        )),
         Box::new(BlockGenerator::default()),
         Box::new(BloomFilterLoadGenerator),
         Box::new(BloomFilterAddGenerator),

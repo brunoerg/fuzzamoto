@@ -612,8 +612,8 @@ impl<R: RngCore> Generator<R> for HeaderGenerator {
 pub const MAX_HEADERS_RESULTS: u16 = 2000;
 
 /// Headers sent by all `SendHeaderChain` instructions of a program combined. A low-work headers
-/// sync of a fork from the snapshot tip needs four full messages (presync and redownload), so this
-/// leaves room for one such sync plus a partial second attempt.
+/// sync of a fork from a low-work header needs about four full messages (two for presync and two
+/// for redownload), so this leaves room for one such sync plus a partial second attempt.
 pub const MAX_HEADER_CHAIN_HEADERS_PER_PROGRAM: u32 = 10_000;
 
 /// Number of headers for a `SendHeaderChain`, mostly full messages
@@ -636,17 +636,22 @@ pub fn random_header_time_step<R: RngCore>(rng: &mut R) -> u16 {
 }
 
 /// `HeaderChainGenerator` sends a long chain of headers over several `headers` messages. When the
-/// chain has less work than the node's anti-DoS threshold (e.g. with a raised `-minimumchainwork`),
-/// this drives a low-work headers sync: the messages are first used for the presync phase, and
-/// sending the same chain again from its start serves the redownload phase.
+/// chain forks from a low-work header, its first full message has less work than the node's
+/// anti-DoS threshold and starts a low-work headers sync: the messages are first used for the
+/// presync phase, and sending the same chain again from its start serves the redownload phase.
+/// Chains forking from other headers (e.g. near the tip) exercise the regular headers sync.
 pub struct HeaderChainGenerator {
     headers: Vec<Header>,
+    low_work_headers: Vec<Header>,
 }
 
 impl HeaderChainGenerator {
     #[must_use]
-    pub fn new(headers: Vec<Header>) -> Self {
-        Self { headers }
+    pub fn new(headers: Vec<Header>, low_work_headers: Vec<Header>) -> Self {
+        Self {
+            headers,
+            low_work_headers,
+        }
     }
 }
 
@@ -669,14 +674,24 @@ impl<R: RngCore> Generator<R> for HeaderChainGenerator {
             return Ok(());
         }
 
-        let start = match builder.get_random_variable(rng, &Variable::Header) {
-            Some(header_var) if rng.gen_bool(0.5) => header_var.index,
-            _ => load_header(
-                builder,
-                self.headers
-                    .choose(rng)
-                    .ok_or(GeneratorError::MissingVariables)?,
-            ),
+        // Mostly fork from a low-work header to reach the low-work headers sync
+        let low_work_header = if rng.gen_bool(0.75) {
+            self.low_work_headers.choose(rng)
+        } else {
+            None
+        };
+        let start = if let Some(header) = low_work_header {
+            load_header(builder, header)
+        } else {
+            match builder.get_random_variable(rng, &Variable::Header) {
+                Some(header_var) if rng.gen_bool(0.5) => header_var.index,
+                _ => load_header(
+                    builder,
+                    self.headers
+                        .choose(rng)
+                        .ok_or(GeneratorError::MissingVariables)?,
+                ),
+            }
         };
         let conn_var = builder.get_or_create_random_connection(rng);
 

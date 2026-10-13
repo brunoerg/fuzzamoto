@@ -77,6 +77,12 @@ impl BitcoinCoreTarget {
             "-peertimeout=999999999",
             "-noconnect",
         ]);
+        // Regtest runs `CheckBlockIndex()`, which walks the whole block index, on every block
+        // index operation, including once per header the node accepts. The setup chain is long
+        // enough to test the low-work headers sync (see `SETUP_CHAIN_HEIGHT`), so checking every
+        // operation would dominate execution time. Check a random one in 100 operations instead,
+        // which keeps the consistency checks enabled (requires Bitcoin Core v28.0 or later).
+        config.args.push("-checkblockindex=100");
         config
     }
 }

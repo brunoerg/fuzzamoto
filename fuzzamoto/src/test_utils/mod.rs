@@ -80,4 +80,31 @@ mod tests {
         assert!(block.check_merkle_root());
         assert!(block.check_witness_commitment());
     }
+
+    #[test]
+    fn test_regtest_block_subsidy() {
+        assert_eq!(mining::regtest_block_subsidy(0), Amount::from_int_btc(50));
+        assert_eq!(mining::regtest_block_subsidy(149), Amount::from_int_btc(50));
+        assert_eq!(mining::regtest_block_subsidy(150), Amount::from_int_btc(25));
+        assert_eq!(
+            mining::regtest_block_subsidy(2_500),
+            Amount::from_sat(5_000_000_000 >> 16)
+        );
+        assert_eq!(mining::regtest_block_subsidy(150 * 64), Amount::ZERO);
+    }
+
+    #[test]
+    fn test_coinbase_value() {
+        // Unchanged below the second halving, so the coinbases of earlier blocks keep their txids
+        assert_eq!(mining::coinbase_value(1), Amount::from_int_btc(25));
+        assert_eq!(mining::coinbase_value(299), Amount::from_int_btc(25));
+        assert_eq!(
+            mining::coinbase_value(300),
+            mining::regtest_block_subsidy(300)
+        );
+        assert_eq!(
+            mining::coinbase_value(2_501),
+            mining::regtest_block_subsidy(2_501)
+        );
+    }
 }

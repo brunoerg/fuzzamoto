@@ -75,9 +75,10 @@ impl ScenarioInput<'_> for TestCase {
 
 /// `CompactBlocksScenario` is a scenario that tests the compact block relay protocol.
 ///
-/// The scenario setup creates a couple of connections to the target node and mines a chain of 200
-/// blocks. Testcases simulate the processing of a series of compact block protocol messages by the
-/// target node, i.e. each testcase represents a series of different types of actions:
+/// The scenario setup creates a couple of connections to the target node and mines a chain of
+/// [`SETUP_CHAIN_HEIGHT`](fuzzamoto::scenarios::generic::SETUP_CHAIN_HEIGHT) blocks. Testcases
+/// simulate the processing of a series of compact block protocol messages by the target node, i.e.
+/// each testcase represents a series of different types of actions:
 ///
 /// 1. Construct a new block for relay
 /// 2. Send an `inv` message to the target node for a previously constructed block
@@ -112,7 +113,10 @@ impl<TX: Transport, T: Target<TX>> CompactBlocksScenario<TX, T> {
         num_txs: u16,
         prevs: &[(u32, BlockHash, bitcoin::OutPoint)],
     ) {
-        let prev = prevs[180..][prev as usize % (prevs.len() - 180)];
+        // Only build on the last blocks: forks further below the tip have less work than the node's
+        // anti-DoS threshold and would be ignored.
+        let recent = &prevs[prevs.len() - 20..];
+        let prev = recent[prev as usize % recent.len()];
         let mut block =
             test_utils::mining::mine_block(prev.1, prev.0 + 1, self.inner.time as u32 + 1);
 

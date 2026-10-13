@@ -66,6 +66,26 @@ pub fn fixup_proof_of_work(block: &mut Block) {
     }
 }
 
+/// Regtest halves the block subsidy every 150 blocks
+const REGTEST_SUBSIDY_HALVING_INTERVAL: u32 = 150;
+
+/// Block subsidy on regtest at `height`
+#[must_use]
+pub fn regtest_block_subsidy(height: u32) -> Amount {
+    let halvings = height / REGTEST_SUBSIDY_HALVING_INTERVAL;
+    if halvings >= 64 {
+        return Amount::ZERO;
+    }
+    Amount::from_sat(Amount::from_int_btc(50).to_sat() >> halvings)
+}
+
+/// Value paid by the coinbase of blocks built by the harness: 25 BTC, or the block subsidy once
+/// it has halved below that
+#[must_use]
+pub fn coinbase_value(height: u32) -> Amount {
+    Amount::from_int_btc(25).min(regtest_block_subsidy(height))
+}
+
 #[must_use]
 pub fn mine_block(prev_hash: BlockHash, height: u32, time: u32) -> Block {
     let mut p2wsh_optrue_spk = vec![OP_0.to_u8(), 32];
@@ -91,7 +111,7 @@ pub fn mine_block(prev_hash: BlockHash, height: u32, time: u32) -> Block {
         }],
         output: vec![
             TxOut {
-                value: Amount::from_int_btc(25),
+                value: coinbase_value(height),
                 script_pubkey: p2wsh_optrue_spk.into(),
             },
             create_witness_commitment_output(WitnessMerkleNode::from_raw_hash(

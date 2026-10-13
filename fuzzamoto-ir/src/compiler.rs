@@ -2209,6 +2209,16 @@ impl Compiler {
             .as_script()
             .into();
 
+        // The coinbase outputs were built against 25 BTC, which exceeds the subsidy once it halved
+        // below that, so cap them to what a block at this height may pay. Every output but the
+        // last one (the witness commitment) pays from the remaining value, as when adding them.
+        let mut remaining = fuzzamoto::test_utils::mining::coinbase_value(header_var.height + 1);
+        let num_outputs = coinbase_tx_var.tx.tx.output.len();
+        for output in &mut coinbase_tx_var.tx.tx.output[..num_outputs.saturating_sub(1)] {
+            output.value = output.value.min(remaining);
+            remaining -= output.value;
+        }
+
         let mut txdata = vec![coinbase_tx_var.tx.tx.clone()];
         txdata.extend(block_transactions_var.txs.iter().map(|tx| tx.tx.clone()));
 
@@ -2608,6 +2618,100 @@ mod tests {
         let decoded = BlockTransactionsRequest::consensus_decode(&mut bytes.as_slice())
             .expect("sanitized getblocktxn request should decode");
         assert_eq!(decoded.indexes, sanitized);
+    }
+
+    /// Compile a block built on a header at `height` with a coinbase from `CoinbaseTxGenerator`
+    /// and return the total value its coinbase pays
+    fn compiled_coinbase_value(height: u32) -> u64 {
+        use crate::{
+            Variable,
+            generators::{Generator, tx::CoinbaseTxGenerator},
+        };
+        use bitcoin::{Block, consensus::deserialize};
+        use rand::{SeedableRng, rngs::SmallRng};
+
+        let mut rng = SmallRng::seed_from_u64(7);
+        let mut builder = ProgramBuilder::new(ProgramContext {
+            num_nodes: 1,
+            num_connections: 1,
+            timestamp: 1_296_688_802,
+        });
+        let conn = builder.force_append_expect_output(vec![], &Operation::LoadConnection(0));
+        let header = builder.force_append_expect_output(
+            vec![],
+            &Operation::LoadHeader {
+                prev: [1; 32],
+                merkle_root: [2; 32],
+                nonce: 0,
+                bits: 0x207f_ffff,
+                time: 1_296_688_602,
+                version: 4,
+                height,
+            },
+        );
+        let time = builder.force_append_expect_output(vec![], &Operation::LoadTime(1_296_688_802));
+        let mut_txs =
+            builder.force_append_expect_output(vec![], &Operation::BeginBlockTransactions);
+        let const_txs = builder
+            .force_append_expect_output(vec![mut_txs.index], &Operation::EndBlockTransactions);
+        let version = builder.force_append_expect_output(vec![], &Operation::LoadBlockVersion(5));
+        CoinbaseTxGenerator
+            .generate(&mut builder, &mut rng, None)
+            .expect("coinbase generates");
+        let coinbase = builder
+            .get_random_variable(&mut rng, &Variable::CoinbaseTx)
+            .expect("coinbase var");
+        let block = builder
+            .append(Instruction {
+                inputs: vec![
+                    coinbase.index,
+                    header.index,
+                    time.index,
+                    version.index,
+                    const_txs.index,
+                ],
+                operation: Operation::BuildBlock,
+            })
+            .expect("BuildBlock appends")[1]
+            .clone();
+        builder.force_append(vec![conn.index, block.index], &Operation::SendBlock);
+
+        let program = builder.finalize().expect("valid program");
+        let compiled = Compiler::new().compile(&program).expect("program compiles");
+        let payload = compiled
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                CompiledAction::SendRawMessage(_, cmd, payload)
+                    if cmd.trim_end_matches('\0') == "block" =>
+                {
+                    Some(payload.clone())
+                }
+                _ => None,
+            })
+            .expect("block message");
+        let block: Block = deserialize(&payload).expect("block decodes");
+        block.txdata[0]
+            .output
+            .iter()
+            .map(|output| output.value.to_sat())
+            .sum()
+    }
+
+    #[test]
+    fn compile_block_caps_coinbase_to_subsidy() {
+        use fuzzamoto::test_utils::mining::coinbase_value;
+
+        // Before the subsidy halved below 25 BTC the coinbase is left as generated, and the same
+        // coinbase pays more than the subsidy of later heights...
+        let early = compiled_coinbase_value(200);
+        assert!(early <= coinbase_value(201).to_sat());
+        assert!(early > coinbase_value(2_501).to_sat());
+        // ...where it is capped to the subsidy.
+        assert_eq!(
+            compiled_coinbase_value(2_500),
+            coinbase_value(2_501).to_sat()
+        );
     }
 
     #[test]
