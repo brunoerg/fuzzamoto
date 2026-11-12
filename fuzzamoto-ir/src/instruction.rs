@@ -9,7 +9,7 @@ pub struct Instruction {
 impl Instruction {
     #[must_use]
     pub fn is_input_mutable(&self) -> bool {
-        assert!(self.inputs.len() == self.operation.num_inputs());
+        assert_eq!(self.inputs.len(), self.operation.num_inputs());
 
         match self.operation {
             Operation::EndBuildTx
@@ -69,7 +69,9 @@ impl Instruction {
             | Operation::LoadTaprootAnnex { .. }
             | Operation::BuildPayToTaproot
             | Operation::TaprootScriptsUseAnnex
-            | Operation::TaprootTxoUseAnnex => true,
+            | Operation::TaprootTxoUseAnnex
+            | Operation::BuildPayToBareMulti { .. }
+            | Operation::BuildPayToBareMultiEncoded { .. } => true,
             _ => false,
         }
     }
@@ -144,6 +146,8 @@ impl Instruction {
             | Operation::BuildCoinbaseTxInput
             | Operation::AddCoinbaseTxOutput
             | Operation::AddTxToBlockTxn
+            | Operation::AddIndexToGetBlockTxn
+            | Operation::SendGetBlockTxn
             | Operation::SendGetData
             | Operation::SendGetAddr
             | Operation::SendInv
@@ -163,6 +167,8 @@ impl Instruction {
             | Operation::TakeCoinbaseTxo
             | Operation::TaprootScriptsUseAnnex
             | Operation::TaprootTxoUseAnnex
+            | Operation::BuildPayToBareMulti { .. }
+            | Operation::BuildPayToBareMultiEncoded { .. }
             | Operation::TakeTxo => true,
 
             Operation::Nop { .. }
@@ -190,6 +196,8 @@ impl Instruction {
             | Operation::EndBuildCoinbaseTxOutputs
             | Operation::BeginBuildBlockTxn
             | Operation::EndBuildBlockTxn
+            | Operation::BeginBuildGetBlockTxn
+            | Operation::EndBuildGetBlockTxn
             | Operation::Probe => false,
         }
     }
@@ -211,6 +219,7 @@ impl Instruction {
                 Operation::BeginBuildFilterLoad => Some(InstructionContext::BuildFilter),
                 Operation::BeginBuildCoinbaseTx => Some(InstructionContext::BuildCoinbaseTx),
                 Operation::BeginBuildBlockTxn => Some(InstructionContext::BuildBlockTxn),
+                Operation::BeginBuildGetBlockTxn => Some(InstructionContext::BuildGetBlockTxn),
                 Operation::BeginBuildCoinbaseTxOutputs => {
                     Some(InstructionContext::BuildCoinbaseTxOutputs)
                 }
@@ -248,5 +257,6 @@ pub enum InstructionContext {
     BuildCoinbaseTx,
     BuildCoinbaseTxOutputs,
     BuildBlockTxn,
+    BuildGetBlockTxn,
     BuildPrefill,
 }

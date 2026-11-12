@@ -94,13 +94,13 @@ jobs:
     outputs:
       base_image: ${{ steps.meta.outputs.base_image }}
     steps:
-      - uses: actions/checkout@v4 # Bitcoin Core build is version-independent
+      - uses: actions/checkout@v7 # Bitcoin Core build is version-independent
       - id: meta
         # Content-addressed tag: rebuilt only when the base build inputs actually change.
         run: echo "base_image=${{ env.RUNS_ON_ECR_CACHE }}:base-${{ hashFiles('Dockerfile.libafl', 'target-patches/**', 'ci/**') }}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build & push the base image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.libafl
@@ -130,12 +130,12 @@ jobs:
         version: [baseline, experiment]
     steps:
       - name: Checkout fuzzer version to bake
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ matrix.version == 'baseline' && needs.setup.outputs.baseline || needs.setup.outputs.experiment }}
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build & push the per-version fuzzer image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.libafl.bench
@@ -201,7 +201,7 @@ jobs:
             core=$(basename "$(dirname "$c")")
             cp -r "$c" "artifact/crashes-$core" 2>/dev/null || true
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bench-${{ matrix.version }}-${{ matrix.run }}
           path: artifact
@@ -217,8 +217,8 @@ jobs:
       - family=m7i+c7i
       - image=ubuntu22-full-x64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: bench-*
           path: dl
@@ -258,7 +258,7 @@ jobs:
         run: |
           mkdir -p pr
           echo "${{ github.event.pull_request.number }}" > pr/pr-number.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: github.event_name == 'pull_request'
         with:
           name: pr-number

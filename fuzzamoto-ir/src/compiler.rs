@@ -31,8 +31,8 @@ use std::{any::Any, convert::TryInto, time::Duration};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::{
-    AddrNetwork, AddrRecord, Instruction, Operation, Program, TaprootKeypair, TaprootLeaf,
-    TaprootSpendInfo, bloom::filter_insert, generators::block::Header,
+    AddrNetwork, AddrRecord, Instruction, Operation, Program, ScriptIntEncoding, TaprootKeypair,
+    TaprootLeaf, TaprootSpendInfo, bloom::filter_insert, generators::block::Header,
 };
 
 /// `Compiler` is responsible for compiling IR into a sequence of low-level actions to be performed
@@ -191,6 +191,11 @@ enum SigningRequest {
         private_key_var: usize,
         sighash_var: usize,
     },
+    BareMulti {
+        required: u8,
+        private_keys: Vec<[u8; 32]>,
+        sighash_var: usize,
+    },
     Taproot {
         spend_info_var: Option<usize>,
         selected_leaf: Option<TaprootLeaf>,
@@ -221,6 +226,14 @@ fn build_control_block(
         control.extend_from_slice(hash);
     }
     control
+}
+
+/// A legacy (pre-segwit) signature push: DER followed by the sighash byte the digest was computed
+/// with. Bitcoin Core recomputes the digest from this byte, so it must not be normalized.
+fn legacy_signature_bytes(signature: &secp256k1::ecdsa::Signature, sighash_flag: u8) -> Vec<u8> {
+    let mut bytes = signature.serialize_der().to_vec();
+    bytes.push(sighash_flag);
+    bytes
 }
 
 #[derive(Clone, Debug)]
@@ -424,6 +437,8 @@ impl Compiler {
                 | Operation::BuildPayToPubKey
                 | Operation::BuildPayToPubKeyHash
                 | Operation::BuildPayToWitnessPubKeyHash
+                | Operation::BuildPayToBareMulti { .. }
+                | Operation::BuildPayToBareMultiEncoded { .. }
                 | Operation::BuildPayToTaproot => {
                     self.handle_script_building_operations(instruction)?;
                 }
@@ -469,6 +484,12 @@ impl Compiler {
                     self.handle_bip152_blocktxn_operations(instruction)?;
                 }
 
+                Operation::BeginBuildGetBlockTxn
+                | Operation::EndBuildGetBlockTxn
+                | Operation::AddIndexToGetBlockTxn => {
+                    self.handle_bip152_getblocktxn_operations(instruction)?;
+                }
+
                 Operation::AddConnection | Operation::AddConnectionWithHandshake { .. } => {
                     self.handle_new_connection_operations(instruction)?;
                 }
@@ -498,7 +519,8 @@ impl Compiler {
                 | Operation::SendFilterAdd
                 | Operation::SendFilterClear
                 | Operation::SendCompactBlock
-                | Operation::SendBlockTxn => {
+                | Operation::SendBlockTxn
+                | Operation::SendGetBlockTxn => {
                     self.handle_message_sending_operations(instruction)?;
                 }
 
@@ -1054,6 +1076,32 @@ impl Compiler {
                     requires_signing: None,
                 });
             }
+            Operation::BuildPayToBareMulti {
+                required,
+                private_keys,
+            } => {
+                self.build_bare_multisig(
+                    instruction,
+                    *required,
+                    private_keys,
+                    ScriptIntEncoding::Minimal,
+                    ScriptIntEncoding::Minimal,
+                )?;
+            }
+            Operation::BuildPayToBareMultiEncoded {
+                required,
+                private_keys,
+                required_encoding,
+                key_count_encoding,
+            } => {
+                self.build_bare_multisig(
+                    instruction,
+                    *required,
+                    private_keys,
+                    *required_encoding,
+                    *key_count_encoding,
+                )?;
+            }
             Operation::BuildPayToScriptHash => {
                 let script = self.get_input::<Vec<u8>>(&instruction.inputs, 0)?;
                 let witness_var = self.get_input::<Witness>(&instruction.inputs, 1)?;
@@ -1180,6 +1228,57 @@ impl Compiler {
                 "Non-script-building operation passed to handle_script_building_operations"
             ),
         }
+        Ok(())
+    }
+
+    /// Bare `m`-of-`n` multisig output, pushing `m` and `n` with the given encodings.
+    fn build_bare_multisig(
+        &mut self,
+        instruction: &Instruction,
+        required: u8,
+        private_keys: &[[u8; 32]],
+        required_encoding: ScriptIntEncoding,
+        key_count_encoding: ScriptIntEncoding,
+    ) -> Result<(), CompilerError> {
+        let _sighash_flags_var = self.get_input::<u8>(&instruction.inputs, 0)?;
+        let sighash_var = instruction
+            .inputs
+            .first()
+            .copied()
+            .ok_or(CompilerError::IncorrectNumberOfInputs)?;
+        let n = u8::try_from(private_keys.len())
+            .map_err(|_| CompilerError::MiscError("too many keys in bare multisig".to_string()))?;
+        if n == 0 {
+            return Err(CompilerError::MiscError(
+                "bare multisig requires at least one private key".to_string(),
+            ));
+        }
+        let required_clamped = required.min(n).max(1);
+
+        let mut script_pubkey = required_encoding.encode(required_clamped);
+        for sk_bytes in private_keys {
+            let pk = PrivateKey::from_slice(sk_bytes, NetworkKind::Main).map_err(|_| {
+                CompilerError::MiscError("invalid bare multisig private key".to_string())
+            })?;
+            script_pubkey.extend(
+                ScriptBuf::builder()
+                    .push_key(&pk.public_key(&self.secp_ctx))
+                    .into_bytes(),
+            );
+        }
+        script_pubkey.extend(key_count_encoding.encode(n));
+        script_pubkey.push(bitcoin::opcodes::all::OP_CHECKMULTISIG.to_u8());
+
+        self.append_variable(Scripts {
+            script_pubkey,
+            script_sig: vec![],
+            witness: Witness { stack: Vec::new() },
+            requires_signing: Some(SigningRequest::BareMulti {
+                required: required_clamped,
+                private_keys: private_keys.to_vec(),
+                sighash_var,
+            }),
+        });
         Ok(())
     }
 
@@ -1385,6 +1484,17 @@ impl Compiler {
                     .clone();
                 self.emit_send_message(*connection_var, "blocktxn", &blocktxn);
             }
+            Operation::SendGetBlockTxn => {
+                let connection_var = *self.get_input::<usize>(&instruction.inputs, 0)?;
+                let request = self
+                    .get_input::<bitcoin::bip152::BlockTransactionsRequest>(&instruction.inputs, 1)?
+                    .clone();
+                let sanitized = bitcoin::bip152::BlockTransactionsRequest {
+                    block_hash: request.block_hash,
+                    indexes: sanitize_getblocktxn_indexes(request.indexes),
+                };
+                self.emit_send_message(connection_var, "getblocktxn", &sanitized);
+            }
             Operation::SendRawMessage => {
                 let connection_var = self.get_input::<usize>(&instruction.inputs, 0)?;
                 let message_type_var = self.get_input::<[char; 12]>(&instruction.inputs, 1)?;
@@ -1587,6 +1697,40 @@ impl Compiler {
             }
             _ => unreachable!(
                 "Non-message-sending operation passed to handle_message_sending_operations"
+            ),
+        }
+        Ok(())
+    }
+
+    fn handle_bip152_getblocktxn_operations(
+        &mut self,
+        instruction: &Instruction,
+    ) -> Result<(), CompilerError> {
+        match &instruction.operation {
+            Operation::BeginBuildGetBlockTxn => {
+                let block = self.get_input::<Block>(&instruction.inputs, 0)?;
+                let request = bitcoin::bip152::BlockTransactionsRequest {
+                    block_hash: block.block_hash(),
+                    indexes: Vec::new(),
+                };
+                self.append_variable(request);
+            }
+            Operation::AddIndexToGetBlockTxn => {
+                let index = *self.get_input::<usize>(&instruction.inputs, 1)?;
+                let request = self.get_input_mut::<bitcoin::bip152::BlockTransactionsRequest>(
+                    &instruction.inputs,
+                    0,
+                )?;
+                request.indexes.push(index as u64);
+            }
+            Operation::EndBuildGetBlockTxn => {
+                let request = self
+                    .get_input::<bitcoin::bip152::BlockTransactionsRequest>(&instruction.inputs, 0)?
+                    .clone();
+                self.append_variable(request);
+            }
+            _ => unreachable!(
+                "Non-getblocktxn operation passed to handle_bip152_getblocktxn_operations"
             ),
         }
         Ok(())
@@ -2160,19 +2304,17 @@ impl Compiler {
                                     Script::from_bytes(&txo_var.scripts.script_pubkey),
                                     u32::from(sighash_flag),
                                 ) {
-                                    let signature = ecdsa::Signature {
-                                        signature: self.secp_ctx.sign_ecdsa(
+                                    let signature = legacy_signature_bytes(
+                                        &self.secp_ctx.sign_ecdsa(
                                             &secp256k1::Message::from_digest(*hash.as_byte_array()),
                                             &SecretKey::from_slice(private_key.as_slice()).unwrap(),
                                         ),
-                                        sighash_type: EcdsaSighashType::from_consensus(u32::from(
-                                            sighash_flag,
-                                        )),
-                                    };
-
-                                    tx_var.tx.input[idx].script_sig.push_slice(
-                                        PushBytesBuf::try_from(signature.to_vec()).unwrap(),
+                                        sighash_flag,
                                     );
+
+                                    tx_var.tx.input[idx]
+                                        .script_sig
+                                        .push_slice(PushBytesBuf::try_from(signature).unwrap());
                                 }
                             }
                             Operation::BuildPayToWitnessPubKeyHash => {
@@ -2197,6 +2339,40 @@ impl Compiler {
                             }
                             _ => {}
                         }
+                    }
+                    SigningRequest::BareMulti {
+                        required,
+                        private_keys,
+                        sighash_var,
+                    } => {
+                        let sighash_flag = *self.get_variable::<u8>(*sighash_var).unwrap();
+
+                        // scriptPubKey is already on the txo; use it for signing
+                        let script_code = Script::from_bytes(&txo_var.scripts.script_pubkey);
+
+                        // Collect `required` signatures (first `required` keys)
+                        let mut sig_script_builder =
+                            ScriptBuf::builder().push_opcode(bitcoin::opcodes::OP_0);
+
+                        for sk_bytes in private_keys.iter().take(*required as usize) {
+                            if let Ok(hash) = cache.legacy_signature_hash(
+                                idx,
+                                script_code,
+                                u32::from(sighash_flag),
+                            ) {
+                                let signature = legacy_signature_bytes(
+                                    &self.secp_ctx.sign_ecdsa(
+                                        &secp256k1::Message::from_digest(*hash.as_byte_array()),
+                                        &SecretKey::from_slice(sk_bytes.as_slice()).unwrap(),
+                                    ),
+                                    sighash_flag,
+                                );
+                                sig_script_builder = sig_script_builder
+                                    .push_slice(PushBytesBuf::try_from(signature).unwrap());
+                            }
+                        }
+
+                        tx_var.tx.input[idx].script_sig = sig_script_builder.into_script();
                     }
                     SigningRequest::Taproot {
                         spend_info_var,
@@ -2327,15 +2503,52 @@ impl Compiler {
     }
 }
 
+/// Sanitize the index list of a `getblocktxn` request before encoding.
+///
+/// `BlockTransactionsRequest` is differentially `VarInt` encoded, which panics on non-increasing
+/// indexes or on `u64::MAX`. The IR (and its mutators) may produce arbitrary index values, so we
+/// drop `u64::MAX`, sort and dedup to guarantee a panic-free, well-formed encoding. The semantic
+/// fuzzing value (e.g. out-of-range indexes past the end of the block) is preserved.
+fn sanitize_getblocktxn_indexes(mut indexes: Vec<u64>) -> Vec<u64> {
+    indexes.retain(|&i| i != u64::MAX);
+    indexes.sort_unstable();
+    indexes.dedup();
+    indexes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        IndexedVariable, Operation, Program, ProgramBuilder, ProgramContext, TaprootLeafSpec,
+        IndexedVariable, Instruction, Operation, Program, ProgramBuilder, ProgramContext,
+        TaprootLeafSpec,
     };
     use bitcoin::{
         Transaction, consensus::Decodable, opcodes::all::OP_PUSHNUM_1, taproot::LeafVersion,
     };
+
+    #[test]
+    fn sanitize_getblocktxn_indexes_yields_encodable_request() {
+        use bitcoin::bip152::BlockTransactionsRequest;
+        use bitcoin::hashes::Hash;
+
+        // Hostile index list: out of order, duplicates, and u64::MAX (which would otherwise panic
+        // the differential VarInt encoder).
+        let raw = vec![5u64, 1, 1, 0, 9, u64::MAX, 3, 9];
+        let sanitized = sanitize_getblocktxn_indexes(raw);
+        assert_eq!(sanitized, vec![0, 1, 3, 5, 9]);
+
+        let request = BlockTransactionsRequest {
+            block_hash: bitcoin::BlockHash::all_zeros(),
+            indexes: sanitized.clone(),
+        };
+
+        // Must encode without panicking and decode back to the same indexes.
+        let bytes = bitcoin::consensus::encode::serialize(&request);
+        let decoded = BlockTransactionsRequest::consensus_decode(&mut bytes.as_slice())
+            .expect("sanitized getblocktxn request should decode");
+        assert_eq!(decoded.indexes, sanitized);
+    }
 
     #[test]
     fn compile_send_getaddr_emits_getaddr_message() {
@@ -2636,6 +2849,56 @@ mod tests {
         assert_eq!(&control_block[33..], &HIDDEN_HASH);
     }
 
+    #[test]
+    fn compile_bare_multisig_without_sighash_input_returns_error() {
+        let program = Program::unchecked_new(
+            test_context(),
+            vec![Instruction {
+                inputs: vec![],
+                operation: Operation::BuildPayToBareMulti {
+                    required: 1,
+                    private_keys: vec![[1u8; 32]],
+                },
+            }],
+        );
+
+        let mut compiler = Compiler::new();
+        let err = compiler
+            .compile(&program)
+            .expect_err("expected compile error");
+        assert!(matches!(err, CompilerError::IncorrectNumberOfInputs));
+    }
+
+    #[test]
+    fn compile_bare_multisig_without_private_keys_returns_error() {
+        let program = Program::unchecked_new(
+            test_context(),
+            vec![
+                Instruction {
+                    inputs: vec![],
+                    operation: Operation::LoadSigHashFlags(0),
+                },
+                Instruction {
+                    inputs: vec![0],
+                    operation: Operation::BuildPayToBareMulti {
+                        required: 1,
+                        private_keys: vec![],
+                    },
+                },
+            ],
+        );
+
+        let mut compiler = Compiler::new();
+        let err = compiler
+            .compile(&program)
+            .expect_err("expected compile error");
+        assert!(matches!(
+            err,
+            CompilerError::MiscError(ref msg)
+            if msg == "bare multisig requires at least one private key"
+        ));
+    }
+
     fn build_annex_program(annex: Vec<u8>) -> Program {
         let mut builder = ProgramBuilder::new(ProgramContext {
             num_nodes: 1,
@@ -2792,6 +3055,140 @@ mod tests {
             vec![mut_tx.index, const_inputs.index, const_outputs.index],
             &Operation::EndBuildTx,
         )
+    }
+
+    #[test]
+    fn compile_legacy_signature_keeps_raw_sighash_byte() {
+        // Bitcoin Core recomputes the digest from the signature's last byte, so a non-standard
+        // sighash flag must be appended as-is rather than normalized.
+        let key = [1u8; 32];
+        let mut builder = ProgramBuilder::new(test_context());
+        let conn = builder.force_append_expect_output(vec![], &Operation::LoadConnection(0));
+        let txo = append_op_true_txo(&mut builder, [9u8; 32], 100_000);
+        let sighash = builder.force_append_expect_output(vec![], &Operation::LoadSigHashFlags(0));
+        let scripts = builder.force_append_expect_output(
+            vec![sighash.index],
+            &Operation::BuildPayToBareMulti {
+                required: 1,
+                private_keys: vec![key],
+            },
+        );
+        let funding =
+            build_single_output_tx_for_tests(&mut builder, txo.index, scripts.index, 90_000);
+        builder.force_append(vec![conn.index, funding.index], &Operation::SendTx);
+        let multisig_txo =
+            builder.force_append_expect_output(vec![funding.index], &Operation::TakeTxo);
+        let spending = build_single_input_transaction(&mut builder, multisig_txo.index, 80_000);
+        builder.force_append(vec![conn.index, spending.index], &Operation::SendTx);
+        let program = builder.finalize().expect("valid program");
+        let (funding, spending) = (compiled_tx_at(&program, 0), compiled_tx_at(&program, 1));
+
+        let push = spending.input[0]
+            .script_sig
+            .instructions()
+            .nth(1)
+            .and_then(|i| i.ok()?.push_bytes().map(|b| b.as_bytes().to_vec()))
+            .expect("signature push");
+        let (der, sighash_byte) = push.split_at(push.len() - 1);
+        assert_eq!(sighash_byte, [0x00]);
+
+        let secp = Secp256k1::new();
+        let sighash = SighashCache::new(&spending)
+            .legacy_signature_hash(0, &funding.output[0].script_pubkey, 0)
+            .expect("sighash");
+        secp.verify_ecdsa(
+            &secp256k1::Message::from_digest(*sighash.as_byte_array()),
+            &secp256k1::ecdsa::Signature::from_der(der).expect("DER"),
+            &SecretKey::from_slice(&key).unwrap().public_key(&secp),
+        )
+        .expect("signature verifies against the digest for flag 0");
+    }
+
+    /// Funds a bare multisig output built by `operation`, spends it, and returns the compiled
+    /// funding and spending transactions.
+    fn compile_bare_multisig_spend(operation: &Operation) -> (Transaction, Transaction) {
+        let mut builder = ProgramBuilder::new(test_context());
+        let conn = builder.force_append_expect_output(vec![], &Operation::LoadConnection(0));
+        let txo = append_op_true_txo(&mut builder, [9u8; 32], 100_000);
+        let sighash = builder.force_append_expect_output(vec![], &Operation::LoadSigHashFlags(1));
+        let scripts = builder.force_append_expect_output(vec![sighash.index], operation);
+        let funding =
+            build_single_output_tx_for_tests(&mut builder, txo.index, scripts.index, 90_000);
+        builder.force_append(vec![conn.index, funding.index], &Operation::SendTx);
+        let multisig_txo =
+            builder.force_append_expect_output(vec![funding.index], &Operation::TakeTxo);
+        let spending = build_single_input_transaction(&mut builder, multisig_txo.index, 80_000);
+        builder.force_append(vec![conn.index, spending.index], &Operation::SendTx);
+        let program = builder.finalize().expect("valid program");
+        (compiled_tx_at(&program, 0), compiled_tx_at(&program, 1))
+    }
+
+    fn private_keys(n: u8) -> Vec<[u8; 32]> {
+        (1..=n).map(|i| [i; 32]).collect()
+    }
+
+    #[test]
+    fn compile_bare_multisig_minimal_encoding_matches_original() {
+        for n in [1u8, 3, 16, 17, 20] {
+            let (original, _) = compile_bare_multisig_spend(&Operation::BuildPayToBareMulti {
+                required: n,
+                private_keys: private_keys(n),
+            });
+            let (encoded, _) =
+                compile_bare_multisig_spend(&Operation::BuildPayToBareMultiEncoded {
+                    required: n,
+                    private_keys: private_keys(n),
+                    required_encoding: ScriptIntEncoding::Minimal,
+                    key_count_encoding: ScriptIntEncoding::Minimal,
+                });
+            assert_eq!(
+                original.output[0].script_pubkey,
+                encoded.output[0].script_pubkey
+            );
+        }
+    }
+
+    #[test]
+    fn compile_bare_multisig_non_minimal_encoding_is_signed() {
+        let keys = private_keys(5);
+        let (funding, spending) =
+            compile_bare_multisig_spend(&Operation::BuildPayToBareMultiEncoded {
+                required: 3,
+                private_keys: keys.clone(),
+                required_encoding: ScriptIntEncoding::PushData2,
+                key_count_encoding: ScriptIntEncoding::Padded(4),
+            });
+
+        let script_pubkey = &funding.output[0].script_pubkey;
+        let bytes = script_pubkey.as_bytes();
+        assert_eq!(bytes[..4], [0x4d, 0x01, 0x00, 0x03]);
+        assert_eq!(
+            bytes[bytes.len() - 6..],
+            [0x04, 0x05, 0x00, 0x00, 0x00, 0xae]
+        );
+
+        // The scriptSig is OP_0 followed by one signature per required key, in key order.
+        let secp = Secp256k1::new();
+        let sighash = SighashCache::new(&spending)
+            .legacy_signature_hash(0, script_pubkey, 1)
+            .expect("sighash");
+        let message = secp256k1::Message::from_digest(*sighash.as_byte_array());
+        let pushes: Vec<Vec<u8>> = spending.input[0]
+            .script_sig
+            .instructions()
+            .map(|i| match i.expect("valid scriptSig") {
+                bitcoin::script::Instruction::PushBytes(b) => b.as_bytes().to_vec(),
+                bitcoin::script::Instruction::Op(op) => panic!("unexpected {op}"),
+            })
+            .collect();
+        assert_eq!(pushes.len(), 4);
+        assert!(pushes[0].is_empty());
+        for (push, key) in pushes[1..].iter().zip(&keys) {
+            let signature = ecdsa::Signature::from_slice(push).expect("DER signature");
+            let public_key = SecretKey::from_slice(key).unwrap().public_key(&secp);
+            secp.verify_ecdsa(&message, &signature.signature, &public_key)
+                .expect("signature verifies against the encoded script");
+        }
     }
 
     fn test_context() -> ProgramContext {

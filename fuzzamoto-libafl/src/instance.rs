@@ -4,11 +4,12 @@ use fuzzamoto_ir::{
     AddConnectionGenerator, AddTxToBlockGenerator, AddrRelayGenerator, AddrRelayV2Generator,
     AdvanceTimeGenerator, BlockGenerator, BlockTxnGenerator, BloomFilterAddGenerator,
     BloomFilterClearGenerator, BloomFilterLoadGenerator, CombineMutator, CompactBlockGenerator,
-    CompactFilterQueryGenerator, GetAddrGenerator, GetDataGenerator, HeaderGenerator, InputMutator,
-    InventoryGenerator, LargeTxGenerator, LongChainGenerator, OneParentOneChildGenerator,
-    OperationMutator, Program, ReorgBlockGenerator, SendBlockGenerator, SendMessageGenerator,
-    SingleTxGenerator, TipBlockGenerator, TxoGenerator, WitnessGenerator,
-    cutting::CuttingMinimizer, instr_block::InstrBlockMinimizer, nopping::NoppingMinimizer,
+    CompactFilterQueryGenerator, GetAddrGenerator, GetBlockTxnGenerator, GetCompactBlockGenerator,
+    GetDataGenerator, HeaderGenerator, InputMutator, InventoryGenerator, LargeTxGenerator,
+    LongChainGenerator, NonStandardSpendGenerator, OneParentOneChildGenerator, OperationMutator,
+    Program, ReorgBlockGenerator, SendBlockGenerator, SendMessageGenerator, SingleTxGenerator,
+    TipBlockGenerator, TxoGenerator, WitnessGenerator, cutting::CuttingMinimizer,
+    instr_block::InstrBlockMinimizer, nopping::NoppingMinimizer,
 };
 
 use libafl::{
@@ -329,6 +330,16 @@ where
                 )
             ),
             (
+                50.0,
+                IrGenerator::new(
+                    NonStandardSpendGenerator::new(
+                        &full_program_context.headers,
+                        full_program_context.txos.clone()
+                    ),
+                    rng.clone()
+                )
+            ),
+            (
                 100.0,
                 IrSpliceMutator::new(CombineMutator::new(), rng.clone())
             ),
@@ -394,6 +405,11 @@ where
             (10.0, IrGenerator::new(GetAddrGenerator, rng.clone())),
             (200.0, IrGenerator::new(CompactBlockGenerator, rng.clone())),
             (200.0, IrGenerator::new(BlockTxnGenerator, rng.clone())),
+            (200.0, IrGenerator::new(GetBlockTxnGenerator, rng.clone())),
+            (
+                200.0,
+                IrGenerator::new(GetCompactBlockGenerator, rng.clone())
+            ),
             (
                 20.0,
                 IrGenerator::new(AddConnectionGenerator::handshake_outbound(), rng.clone())

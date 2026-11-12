@@ -2,7 +2,7 @@ FROM debian:bookworm
 
 # ------ Coverage for fuzzamoto ------
 
-ARG LLVM_V=19
+ARG LLVM_V=23
 
 # Add the LLVM apt repo
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release software-properties-common wget && \
@@ -67,7 +67,7 @@ RUN cd bitcoin/ && cmake -B build_fuzz_cov \
       -DAPPEND_CFLAGS="-fprofile-instr-generate -fcoverage-mapping" \
       -DAPPEND_CXXFLAGS="-fprofile-instr-generate -fcoverage-mapping" \
       -DAPPEND_LDFLAGS="-fprofile-instr-generate -fcoverage-mapping -fuse-ld=lld-${LLVM_V}" \
-      -DAPPEND_CPPFLAGS="-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION"
+      -DAPPEND_CPPFLAGS="-DFUZZAMOTO_FUZZING -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION"
 
 RUN cmake --build bitcoin/build_fuzz_cov -j$(nproc) --target bitcoind
 
